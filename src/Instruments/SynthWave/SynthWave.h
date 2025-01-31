@@ -22,7 +22,8 @@ public:
     // Implementation of generic pot controls
     void setPot1Value(float value) override;  // Controls filter cutoff
     void setPot2Value(float value) override;  // Controls sub oscillator mix
-
+    void setPot3Value(float value) override; 
+    void setEnvelope(byte envNumber) override;
 private:
     // Oscillators
     Oscil<SAW2048_NUM_CELLS, AUDIO_RATE> mainOsc;

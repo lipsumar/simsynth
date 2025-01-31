@@ -19,7 +19,8 @@ public:
     int16_t updateAudio() override;
     void setPot1Value(float value) override;
     void setPot2Value(float value) override;
-
+    void setPot3Value(float value) override;
+    void setEnvelope(byte envNumber) override;
 private:
     Oscil<SIN2048_NUM_CELLS, MOZZI_AUDIO_RATE> oscCarrier;
     Oscil<SIN2048_NUM_CELLS, MOZZI_AUDIO_RATE> oscModulator1;

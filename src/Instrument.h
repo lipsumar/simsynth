@@ -19,6 +19,8 @@ public:
   // Generic parameter setters - instruments will implement their own logic
   virtual void setPot1Value(float value) = 0;
   virtual void setPot2Value(float value) = 0;
+  virtual void setPot3Value(float value) = 0;
+  virtual void setEnvelope(uint8_t envNumber) = 0;
 
 protected:
   MIDIToFreqFn midiToFreq;

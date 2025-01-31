@@ -39,7 +39,7 @@ void FMInstrument::noteOff(uint8_t note, uint8_t velocity) {
 }
 
 void FMInstrument::updateControl() {
-  envelope.update();
+  //envelope.update();
 }
 
 int16_t FMInstrument::updateAudio() {
@@ -68,4 +68,18 @@ void FMInstrument::setPot2Value(float value) {
   float frequency = midiToFreq(currentNote);
   oscModulator1.setFreq(frequency * mod_ratio1);
   //}
+}
+
+void FMInstrument::setPot3Value(float value) {
+    
+}
+
+void FMInstrument::setEnvelope(byte envNumber) {
+  if(envNumber==0){
+    envelope.setTimes(30, 30, 10000, 30);
+  } else if (envNumber==1){
+    envelope.setTimes(50, 200, 10000, 400);
+  }else{
+    envelope.setTimes(800, 800, 10000, 5000);
+  }
 }
