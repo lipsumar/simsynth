@@ -31,3 +31,23 @@ python char2mozzi.py <raw-file> <h-file-output> <sample-name> 16384
 python char2mozzi.py beep.raw beep.h BEEP 16384
 ```
 
+## Working on the synth
+
+Because the Arduino USB is in "host mode", you need to double press the arduino reset button to upload:
+1. Click "upload" in Arduino IDE
+2. Wait for the status to switch to "uploading" (after compilation)
+3. Double press the reset button
+4. It should then upload normally
+
+It's normal that the Arduino doesn't show up in the Tools > Port menu - because it's in host mode.
+
+### Debugging via serial
+
+Since USB serial is unusable (because the keyboard is connected), debugging should be done via a USB serial cable. 
+
+On the cable i have, i connect:
+- black to GND
+- green to RX
+- white to TX
+
+When this 
