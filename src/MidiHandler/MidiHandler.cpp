@@ -56,7 +56,7 @@ void MidiHandler::MIDI_poll() {
   uint8_t bufMidi[64];
   uint16_t rcvd;
 
-  if (Midi.RecvData(&rcvd, bufMidi) == 0 && rcvd > 0) {
+  while (Midi.RecvData(&rcvd, bufMidi) == 0 && rcvd > 0) {
     handleMidiMessage(bufMidi, rcvd);
   }
 }
