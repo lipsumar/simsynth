@@ -1,134 +1,155 @@
 #include "MidiHandler.h"
 #include "../../SIMSynthConfig.h"
 
+// Initialize static instance
+MidiHandler* MidiHandler::instance = nullptr;
+
+// Global buffer definitions
+uint8_t bufBk0[64] __attribute__ ((aligned (4)));
+uint8_t bufBk1[64] __attribute__ ((aligned (4)));
+
 MidiHandler::MidiHandler()
-  : Hub(&UsbH), Midi(&UsbH), deviceConnected(false), bFirst(true), noteOnCallback(nullptr), noteOffCallback(nullptr) {
+    : Hub(&UsbH), Midi(&UsbH), deviceConnected(false), bFirst(true), 
+      doPipeConfig(false), noteOnCallback(nullptr), noteOffCallback(nullptr) {
+    instance = this;  // Set singleton instance
 }
 
 bool MidiHandler::begin() {
-  SerialDebug.begin(115200);
-  SerialDebug.println("Starting MIDI USB Host...");
+    SerialDebug.begin(115200);
+    SerialDebug.println("Starting MIDI USB Host...");
 
-  USBDevice.attach();
-  delay(200);
-
-  uint8_t attempts = 0;
-  while (attempts < 3) {
-    uint8_t state = UsbH.Init();
-    if (state == 0) {
-      SerialDebug.println("USB host initialized successfully");
-      return true;
+    if (UsbH.Init()) {
+        SerialDebug.println("USB host failed to start");
+        return false;
     }
-    SerialDebug.print("USB host init failed, error code: 0x");
-    SerialDebug.println(state, HEX);
-    attempts++;
-    delay(1000);
-  }
 
-  SerialDebug.println("Failed to initialize USB host after 3 attempts");
-  return false;
+    // Set up interrupt handler
+    USB_SetHandler(&CUSTOM_UHD_Handler);
+    delay(200);
+    return true;
 }
 
 void MidiHandler::update() {
-  UsbH.Task();
-
-  if (Midi) {
-    if (bFirst) {
-      vid = Midi.idVendor();
-      pid = Midi.idProduct();
-      SerialDebug.print("MIDI Device Connected - VID: 0x");
-      SerialDebug.print(vid, HEX);
-      SerialDebug.print(", PID: 0x");
-      SerialDebug.println(pid, HEX);
-
-      deviceConnected = true;
-      bFirst = false;
+    // Handle enumeration only, avoid polling in main loop
+    if (doPipeConfig || (!deviceConnected && (UsbH.getUsbTaskState() != USB_DETACHED_SUBSTATE_WAIT_FOR_DEVICE))) {
+        UsbH.Task();
+    } else if (deviceConnected && (UsbH.getUsbTaskState() != USB_STATE_RUNNING)) {
+        UsbH.Task();
     }
-    MIDI_poll();
-  } else if (!bFirst) {
-    SerialDebug.println("MIDI device disconnected");
-    deviceConnected = false;
-    bFirst = true;
-  }
+
+    if (deviceConnected && (UsbH.getUsbTaskState() == USB_STATE_RUNNING)) {
+        if (Midi && (Midi.GetAddress() != Hub.GetAddress()) && (Midi.GetAddress() != 0)) {
+            if (doPipeConfig) {
+                configurePipe();
+            }
+        }
+    } else {
+        USB_SetHandler(&CUSTOM_UHD_Handler);
+        if (Midi) {
+            USB->HOST.HostPipe[Midi.GetEpAddress()].PINTENCLR.reg = 0xFF; // Disable pipe interrupts
+        }
+    }
 }
 
-void MidiHandler::MIDI_poll() {
-  uint8_t bufMidi[64];
-  uint16_t rcvd;
+void MidiHandler::configurePipe() {
+    uint32_t epAddr = Midi.GetEpAddress();
+    doPipeConfig = false;
+    uint16_t rcvd;
 
-  while (Midi.RecvData(&rcvd, bufMidi) == 0 && rcvd > 0) {
-    handleMidiMessage(bufMidi, rcvd);
-  }
+    while (deviceConnected && (USB->HOST.HostPipe[epAddr].PCFG.bit.PTYPE != 0x03)) {
+        UsbH.Task();
+        Midi.RecvData(&rcvd, bufBk0);
+    }
+
+    // Configure pipe for interrupt-based operation
+    USB->HOST.HostPipe[epAddr].BINTERVAL.reg = 0x01;
+    usb_pipe_table[epAddr].HostDescBank[0].ADDR.reg = (uint32_t)bufBk0;
+    usb_pipe_table[epAddr].HostDescBank[1].ADDR.reg = (uint32_t)bufBk1;
+    USB->HOST.HostPipe[epAddr].PCFG.bit.PTOKEN = tokIN;
+    USB->HOST.HostPipe[epAddr].PSTATUSCLR.reg = USB_HOST_PSTATUSCLR_BK0RDY;
+    uhd_unfreeze_pipe(epAddr);
+    USB->HOST.HostPipe[epAddr].PINTENSET.reg = 0x3;  // Enable pipe interrupts
+
+    SerialDebug.println("Pipe configured for interrupts");
 }
 
-void MidiHandler::handleMidiMessage(uint8_t* data, uint16_t length) {
+void MidiHandler::processMidiMessage(uint8_t* buffer, int length) {
+    // Process buffer in chunks of 4 bytes (USB-MIDI packet format)
+    for (int i = 0; i < length; i++) {
+        if (buffer[i] > 0) {  // Found start of a message
+            uint8_t midiMsg[3];
+            midiMsg[0] = buffer[i + 1];  // Status byte
+            midiMsg[1] = buffer[i + 2];  // Data byte 1
+            midiMsg[2] = buffer[i + 3];  // Data byte 2
 
-  // Debug print the raw MIDI message
-  // SerialDebug.print("MIDI Message: ");
-  // for (uint16_t i = 0; i < length; i++) {
-  //   SerialDebug.print("0x");
-  //   if (data[i] < 0x10) SerialDebug.print("0");  // Add leading zero for values < 0x10
-  //   SerialDebug.print(data[i], HEX);
-  //   SerialDebug.print(" ");
-  // }
-  // SerialDebug.println();
-
-  // Decode and print MIDI message type
-  uint8_t status = data[1];
-  uint8_t channel = status & 0x0F;      // Extract MIDI channel (0-15)
-  uint8_t messageType = status & 0xF0;  // Extract message type
-
-  // SerialDebug.print("Type: ");
-  // switch (messageType) {
-  //   case 0x80:
-  //     SerialDebug.print("Note Off");
-  //     break;
-  //   case 0x90:
-  //     SerialDebug.print("Note On");
-  //     break;
-  //   case 0xA0:
-  //     SerialDebug.print("Polyphonic Aftertouch");
-  //     break;
-  //   case 0xB0:
-  //     SerialDebug.print("Control Change");
-  //     break;
-  //   case 0xC0:
-  //     SerialDebug.print("Program Change");
-  //     break;
-  //   case 0xD0:
-  //     SerialDebug.print("Channel Aftertouch");
-  //     break;
-  //   case 0xE0:
-  //     SerialDebug.print("Pitch Bend");
-  //     break;
-  //   default:
-  //     SerialDebug.print("Unknown (0x");
-  //     SerialDebug.print(messageType, HEX);
-  //     SerialDebug.print(")");
-  // }
-  // SerialDebug.print(" - Channel: ");
-  // SerialDebug.println(channel + 1);  // Print channel (1-16 instead of 0-15)
-
-
-
-
-  // MIDI message format: [Status byte][Data byte 1][Data byte 2]
-  if (length < 3) return;
-
-  //uint8_t status = data[0];
-  uint8_t note = data[2];
-  uint8_t velocity = data[3];
-
-  // Check if it's a Note On message (0x90-0x9F)
-  if ((status & 0xF0) == 0x90) {
-    if (velocity > 0 && noteOnCallback) {
-      noteOnCallback(note, velocity);
-    } else if (velocity == 0 && noteOffCallback) {  // Note On with velocity 0 is equivalent to Note Off
-      noteOffCallback(note, velocity);
+            uint8_t status = midiMsg[0] & 0xF0;  // Strip channel
+            uint8_t note = midiMsg[1];
+            uint8_t velocity = midiMsg[2];
+            
+            if (noteOnCallback && status == 0x90 && velocity > 0) {
+                noteOnCallback(note, velocity);
+            } else if (noteOffCallback && (status == 0x80 || (status == 0x90 && velocity == 0))) {
+                noteOffCallback(note, velocity);
+            }
+            
+            i += 3;  // Skip the remaining bytes of this message
+        }
     }
-  }
-  // Check if it's a Note Off message (0x80-0x8F)
-  else if ((status & 0xF0) == 0x80 && noteOffCallback) {
-    noteOffCallback(note, velocity);
-  }
+}
+
+// Global interrupt handler functions
+void CUSTOM_UHD_Handler(void) {
+    MidiHandler* handler = MidiHandler::getInstance();
+    if (!handler) return;
+
+    uint32_t epAddr = handler->Midi.GetEpAddress();
+
+    if (USB->HOST.INTFLAG.reg == USB_HOST_INTFLAG_DCONN) {
+        SerialDebug.println("Connected");
+        handler->doPipeConfig = true;
+        handler->deviceConnected = true;
+    } else if (USB->HOST.INTFLAG.reg == USB_HOST_INTFLAG_DDISC) {
+        SerialDebug.println("Disconnected");
+        handler->deviceConnected = false;
+        USB->HOST.HostPipe[epAddr].PINTENCLR.reg = 0xFF;
+    }
+
+    UHD_Handler();
+    uhd_freeze_pipe(epAddr);
+
+    // Handle both banks if needed
+    if (Is_uhd_in_received0(epAddr) && Is_uhd_in_received1(epAddr) && uhd_current_bank(epAddr)) {
+        handleBank1(epAddr);
+    }
+    if (Is_uhd_in_received0(epAddr)) {
+        handleBank0(epAddr);
+    }
+    if (Is_uhd_in_received1(epAddr)) {
+        handleBank1(epAddr);
+    }
+    uhd_unfreeze_pipe(epAddr);
+}
+
+void handleBank0(uint32_t epAddr) {
+    MidiHandler* handler = MidiHandler::getInstance();
+    if (!handler) return;
+
+    int rcvd = uhd_byte_count0(epAddr);
+    if (rcvd > 0) {
+        handler->processMidiMessage(bufBk0, rcvd);
+    }
+    uhd_ack_in_received0(epAddr);
+    uhd_ack_in_ready0(epAddr);
+}
+
+void handleBank1(uint32_t epAddr) {
+    MidiHandler* handler = MidiHandler::getInstance();
+    if (!handler) return;
+
+    int rcvd = uhd_byte_count1(epAddr);
+    if (rcvd > 0) {
+        handler->processMidiMessage(bufBk1, rcvd);
+    }
+    uhd_ack_in_received1(epAddr);
+    uhd_ack_in_ready1(epAddr);
 }
